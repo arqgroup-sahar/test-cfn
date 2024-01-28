@@ -299,10 +299,7 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId:
           Ref: NginxLaunchTemplate
-        Version:
-          Fn::GetAtt:
-          - NginxLaunchTemplate
-          - LatestVersionNumber
+        Version: !GetAtt NginxLaunchTemplate.LatestVersionNumber
 
 #####################IAM-Role#####################
   InstanceRole:
