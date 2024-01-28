@@ -1,0 +1,420 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+
+  AmazonLinux2Ami:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+
+Resources:
+
+#####################VPC#####################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:
+        Ref: VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: Task1_VPC
+
+#####################IGW#####################
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Task1_IGW
+
+  VPCtoIGWConnection:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+##################NATGateway##################
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCtoIGWConnection
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnetAz0
+      Tags:
+        - Key: Name
+          Value: Task1_NATGW
+
+#####################Subnets#####################
+  PublicSubnetAz0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [ 0, !Cidr [ !GetAtt VPC.CidrBlock, 4, 8 ]]
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref "AWS::Region"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet (AZ1)
+
+  PublicSubnetAz1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [ 1, !Cidr [ !GetAtt VPC.CidrBlock, 4, 8 ]]
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref "AWS::Region"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet (AZ2)
+
+  PrivateSubnetAz0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [ 2, !Cidr [ !GetAtt VPC.CidrBlock, 4, 8 ]]
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref "AWS::Region"
+      Tags:
+        - Key: Name
+          Value: Private Subnet (AZ1)
+
+  PrivateSubnetAz1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [ 3, !Cidr [ !GetAtt VPC.CidrBlock, 4, 8 ]]
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref "AWS::Region"
+      Tags:
+        - Key: Name
+          Value: Private Subnet (AZ2)
+
+#####################PublicRouteTable#####################
+  RouteTablePublic:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public Route
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCtoIGWConnection
+    Properties:
+      RouteTableId:
+        Ref: RouteTablePublic
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+
+  PublicSubnetAz0RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: 
+        Ref: RouteTablePublic
+      SubnetId:  
+        Ref: PublicSubnetAz0
+
+  PublicSubnetAz1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: 
+        Ref: RouteTablePublic
+      SubnetId:  
+        Ref: PublicSubnetAz1
+
+#####################PrivateRouteTable#####################
+  RouteTablePrivate:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Private Route
+
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetAZ0RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate
+      SubnetId: 
+        Ref: PrivateSubnetAz0
+
+  PrivateSubnetAZ1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate
+      SubnetId:
+        Ref: PrivateSubnetAz1
+
+#####################SecurityGroups#####################
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: grants secure access to the base2 nginx instances through the load balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0 
+      Tags: 
+        - Key: Name
+          Value: Task1-LoadBalancer SG
+
+  NginxSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: grants secure access to the base2 nginx instances from ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+#####################NetworkACL#####################
+  NetworkAclPrivate:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+        - Key: Name
+          Value: Task1-NACL      
+
+  ACLAssociationSubnetPersistence1:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetAz0
+      NetworkAclId:
+        Ref: NetworkAclPrivate
+  
+  ACLAssociationSubnetPersistence2:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetAz1
+      NetworkAclId:
+        Ref: NetworkAclPrivate
+
+#####################LoadBalancer#####################
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: 
+      - VPC
+      - InternetGateway
+      - VPCtoIGWConnection
+    Properties:
+      Name: Task1ApplicationLoadBalancer
+      Subnets: 
+        - !Ref PublicSubnetAz0
+        - !Ref PublicSubnetAz1
+      SecurityGroups: 
+        - !Ref LoadBalancerSecurityGroup
+      Tags: 
+        - Key: Name
+          Value: Task1-ALB
+          
+  HTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: 
+      - VPC
+      - InternetGateway
+      - VPCtoIGWConnection
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref Task1TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  Task1TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Matcher: 
+        HttpCode: 200,302
+      Name: NginxTargetGroup
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      TargetType: instance
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Task1-TargetGroup
+
+#####################AutoScalingGroup#####################
+  NginxAutoScaleGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: '3'
+      MinSize: '3'
+      MaxSize: '5'
+      TargetGroupARNs:
+        - !Ref Task1TargetGroup
+      VPCZoneIdentifier:
+      - Ref: PublicSubnetAz0
+      - Ref: PublicSubnetAz1
+      LaunchTemplate:
+        LaunchTemplateId:
+          Ref: NginxLaunchTemplate
+        Version:
+          Fn::GetAtt:
+          - NginxLaunchTemplate
+          - LatestVersionNumber
+
+#####################IAM-Role#####################
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: ec2.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: eni-attach
+        PolicyDocument:
+          Statement:
+          - Sid: fulladmin
+            Action: "*"
+            Resource:
+            - "*"
+            Effect: Allow
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+#####################EC2#####################
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+      - Ref: InstanceRole
+
+  NginxLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref AmazonLinux2Ami
+        InstanceType: 't3.micro'
+        UserData:
+          Fn::Base64:
+            Fn::Sub: |
+
+              #!/bin/bash
+
+              /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource NginxLaunchTemplate --region ${AWS::Region}
+
+        IamInstanceProfile:
+          Name: !Ref InstanceProfile
+        SecurityGroupIds:
+          - !Ref NginxSecurityGroup
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+          - setup
+          - start
+        setup:
+          commands:
+            install_nginx:
+              command: "amazon-linux-extras install -y nginx1"
+          files:
+            "/var/www/html/index.html":
+              mode: '000644'
+              owner: root
+              group: root
+              content: |
+
+                <html>
+
+                  <body>
+
+                    <title>Welcome to my Web Page</title>
+
+                    <h1>This is a Dev environment created with ClouldFormation in AWS!</h1>
+
+                  </body>
+
+                </html>
+
+            "/etc/nginx/conf.d/training.conf":
+
+              mode: '000644'
+              owner: root
+              group: root
+              content: |
+
+                server {
+
+                    listen 8081 default_server;
+
+                    
+
+                    root /var/www/html/;
+
+
+
+                    location / {
+
+                    }
+
+
+
+                }
+
+        start:
+          services:
+            sysvinit:
+              nginx:
+                enabled: true
+                ensureRunning: true
+
+Outputs:
+  ApplicationLoadBalancerDNSName:
+    Description: The DNSName of the Application Load Balancer
+    Value: !GetAtt BackupLoadBalancer.DNSName
+#    Condition: CreateProdResources                
